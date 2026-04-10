@@ -28,6 +28,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'clickTab':
       clickTab(request.tabName).then(sendResponse);
       return true;
+      
+    case 'editPayment':
+      editPayment(request.totalValue).then(sendResponse);
+      return true;
+      
+    case 'fillPaymentValue':
+      fillPaymentValue(request.totalValue).then(sendResponse);
+      return true;
   }
 });
 
@@ -418,18 +426,15 @@ async function clickTab(tabName) {
   try {
     console.log('SEFAZ Editor - Clicking tab:', tabName);
     
-    // Find tab elements (usually links or td elements)
     const elements = document.querySelectorAll('a, td, span, div');
     
     for (const el of elements) {
       const text = el.textContent.trim();
       if (text === tabName || text.includes(tabName)) {
-        // Check if it looks like a tab
         const isTab = el.tagName === 'A' || 
                       el.onclick || 
                       el.getAttribute('onclick') ||
-                      el.closest('[onclick]') ||
-                      el.classList.toString().toLowerCase().includes('tab');
+                      el.closest('[onclick]');
         
         if (isTab || el.tagName === 'TD') {
           el.click();
@@ -440,13 +445,220 @@ async function clickTab(tabName) {
       }
     }
     
-    console.log('SEFAZ Editor - Tab not found:', tabName);
     return { success: false, error: 'Aba não encontrada' };
     
   } catch (error) {
-    console.error('SEFAZ Editor - Error:', error);
     return { success: false, error: error.message };
   }
+}
+
+// Get payment info (find the link with guid for editing)
+async function getPaymentInfo() {
+  try {
+    console.log('SEFAZ Editor - Getting payment info...');
+    
+    // Find payment row with checkbox
+    const rows = document.querySelectorAll('tr');
+    
+    for (const row of rows) {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      const links = row.querySelectorAll('a');
+      
+      // Check if this looks like a payment row (has "Dinheiro" or similar)
+      const rowText = row.textContent;
+      if (checkbox && (rowText.includes('Dinheiro') || rowText.includes('Pagamento') || rowText.match(/\d+,\d{2}/))) {
+        // Find the link with OpenlstDetItem or similar
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          if (href.includes('Openlst') || href.includes('javascript:')) {
+            const match = href.match(/Openlst[^']*\(['"]([^'"]+)['"]\)/);
+            if (match) {
+              console.log('SEFAZ Editor - Found payment GUID:', match[1]);
+              return { success: true, guid: match[1], hasPayment: true };
+            }
+          }
+        }
+        
+        // If no link found, just return that we have a payment row
+        return { success: true, hasPayment: true, guid: null };
+      }
+    }
+    
+    return { success: false, hasPayment: false };
+    
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Edit payment value
+async function editPayment(totalValue) {
+  try {
+    console.log('SEFAZ Editor - Editing payment with value:', totalValue);
+    
+    // Check if we're already in the payment edit panel
+    let valorInput = findValorPagamentoInput();
+    
+    if (valorInput) {
+      return await fillPaymentAndSave(valorInput, totalValue);
+    }
+    
+    // Not in edit panel - need to select and click Editar
+    console.log('SEFAZ Editor - Payment edit panel not open, trying to open...');
+    
+    // Find and select the payment checkbox
+    const rows = document.querySelectorAll('tr');
+    let paymentCheckbox = null;
+    let paymentGuid = null;
+    
+    for (const row of rows) {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      const rowText = row.textContent;
+      
+      if (checkbox && (rowText.includes('Dinheiro') || rowText.match(/\d+,\d{2}$/))) {
+        paymentCheckbox = checkbox;
+        
+        // Find link with guid
+        const links = row.querySelectorAll('a');
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          const match = href.match(/Openlst[^']*\(['"]([^'"]+)['"]\)/);
+          if (match) {
+            paymentGuid = match[1];
+            break;
+          }
+        }
+        break;
+      }
+    }
+    
+    if (paymentCheckbox) {
+      // Select the checkbox
+      paymentCheckbox.checked = true;
+      paymentCheckbox.click();
+      await sleep(300);
+      
+      // If we have a guid, return it for script execution
+      if (paymentGuid) {
+        return { 
+          success: false, 
+          needsScriptExecution: true, 
+          guid: paymentGuid,
+          totalValue: totalValue
+        };
+      }
+      
+      // Try clicking Editar button
+      const editBtn = findButton('Editar');
+      if (editBtn) {
+        editBtn.click();
+        await sleep(2000);
+        
+        valorInput = findValorPagamentoInput();
+        if (valorInput) {
+          return await fillPaymentAndSave(valorInput, totalValue);
+        }
+      }
+    }
+    
+    return { success: false, error: 'Não foi possível editar o pagamento' };
+    
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Fill payment after panel is opened
+async function fillPaymentValue(totalValue) {
+  try {
+    console.log('SEFAZ Editor - fillPaymentValue:', totalValue);
+    
+    await sleep(1000);
+    
+    let valorInput = findValorPagamentoInput();
+    
+    if (!valorInput) {
+      await sleep(1500);
+      valorInput = findValorPagamentoInput();
+    }
+    
+    if (!valorInput) {
+      return { success: false, error: 'Campo Valor do Pagamento não encontrado' };
+    }
+    
+    return await fillPaymentAndSave(valorInput, totalValue);
+    
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Find "Valor do Pagamento" input
+function findValorPagamentoInput() {
+  const allTds = document.querySelectorAll('td');
+  
+  for (const td of allTds) {
+    const text = td.textContent.trim();
+    
+    if (text === 'Valor do Pagamento:' || text.includes('Valor do Pagamento')) {
+      let nextTd = td.nextElementSibling;
+      if (nextTd && nextTd.tagName === 'TD') {
+        const input = nextTd.querySelector('input[type="text"], input:not([type])');
+        if (input && !input.readOnly && !input.disabled) {
+          return input;
+        }
+      }
+      
+      // Check same row
+      const row = td.closest('tr');
+      if (row) {
+        const inputs = row.querySelectorAll('input[type="text"]');
+        for (const inp of inputs) {
+          if (!inp.readOnly && !inp.disabled && inp.value.match(/[\d\.,]+/)) {
+            return inp;
+          }
+        }
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Fill payment value and save
+async function fillPaymentAndSave(valorInput, totalValue) {
+  console.log('SEFAZ Editor - Filling payment input, current:', valorInput.value);
+  
+  valorInput.focus();
+  await sleep(100);
+  valorInput.select();
+  await sleep(50);
+  
+  // Format the value (should be like 355,20)
+  let formattedValue = totalValue.replace('R$', '').trim();
+  
+  valorInput.value = '';
+  await sleep(50);
+  valorInput.value = formattedValue;
+  
+  valorInput.dispatchEvent(new Event('input', { bubbles: true }));
+  valorInput.dispatchEvent(new Event('change', { bubbles: true }));
+  valorInput.dispatchEvent(new Event('blur', { bubbles: true }));
+  
+  console.log('SEFAZ Editor - Payment value set to:', formattedValue);
+  await sleep(300);
+  
+  // Click Salvar
+  const saveBtn = findButton('Salvar');
+  if (saveBtn) {
+    console.log('SEFAZ Editor - Clicking Salvar');
+    saveBtn.click();
+    await sleep(2000);
+    console.log('SEFAZ Editor - Payment saved!');
+    return { success: true };
+  }
+  
+  return { success: false, error: 'Botão Salvar não encontrado' };
 }
 
 // Helper functions

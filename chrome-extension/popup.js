@@ -277,11 +277,12 @@ async function executeAutomation() {
   
   const productsToEdit = products.filter(p => p.newQty && !p.completed);
   const hasDateChange = dateStart.value.length === 5 && dateEnd.value.length === 5;
-  const totalSteps = productsToEdit.length + (hasDateChange ? 1 : 0) + 1;
+  const totalSteps = productsToEdit.length + (hasDateChange ? 1 : 0) + 3; // +3 for total, payment, done
   let currentStep = 0;
+  let totalNota = '0,00';
   
   try {
-    // Edit products one by one
+    // 1. Edit products one by one
     for (const product of productsToEdit) {
       progressText.textContent = `Editando: ${product.description}...`;
       
@@ -293,17 +294,13 @@ async function executeAutomation() {
       
       // If needs script execution (panel not open), execute OpenlstDetItem
       if (result?.needsScriptExecution && result?.guid) {
-        console.log('Need to execute OpenlstDetItem for:', result.guid);
         progressText.textContent = `Abrindo painel: ${product.description}...`;
         
-        // Execute OpenlstDetItem in page context
         const executed = await executeInPageContext(result.guid, productsFrameId);
         
         if (executed) {
-          // Wait for panel to open
           await new Promise(r => setTimeout(r, 3000));
           
-          // Now fill the quantity
           result = await sendToFrame({
             action: 'fillProductQty',
             productCode: product.code,
@@ -328,48 +325,79 @@ async function executeAutomation() {
       }
     }
     
-    // Update date (go to Observação tab first)
+    // 2. Update date (go to Observação tab first)
     if (hasDateChange) {
       progressText.textContent = 'Atualizando data...';
       await sendToFrame({ action: 'clickTab', tabName: 'Observação' });
       await new Promise(r => setTimeout(r, 1000));
       
       const dateText = `De ${dateStart.value} a ${dateEnd.value}`;
-      const dateResult = await sendToFrame({
-        action: 'updateDate',
-        dateText: dateText
-      });
+      await sendToFrame({ action: 'updateDate', dateText: dateText });
       
       currentStep++;
       progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
-      
-      if (dateResult?.success) {
-        progressText.textContent = 'Data atualizada!';
-      }
-      
+      progressText.textContent = 'Data atualizada!';
       await new Promise(r => setTimeout(r, 1000));
     }
     
-    // Go to Total tab and get value
+    // 3. Go to Total tab and get value
     progressText.textContent = 'Obtendo total...';
     await sendToFrame({ action: 'clickTab', tabName: 'Total' });
     await new Promise(r => setTimeout(r, 1000));
     
     const totalResult = await sendToFrame({ action: 'getTotalValue' });
+    totalNota = totalResult?.totalValue || '0,00';
+    
+    currentStep++;
+    progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
+    progressText.textContent = `Total: R$ ${totalNota}`;
+    await new Promise(r => setTimeout(r, 1000));
+    
+    // 4. Go to Pagamento tab and edit payment
+    progressText.textContent = 'Editando pagamento...';
+    await sendToFrame({ action: 'clickTab', tabName: 'Pagamento' });
+    await new Promise(r => setTimeout(r, 1500));
+    
+    // Try to edit payment
+    let paymentResult = await sendToFrame({
+      action: 'editPayment',
+      totalValue: totalNota
+    });
+    
+    // If needs script execution for payment panel
+    if (paymentResult?.needsScriptExecution && paymentResult?.guid) {
+      progressText.textContent = 'Abrindo painel de pagamento...';
+      
+      const executed = await executeInPageContext(paymentResult.guid, productsFrameId);
+      
+      if (executed) {
+        await new Promise(r => setTimeout(r, 3000));
+        
+        paymentResult = await sendToFrame({
+          action: 'fillPaymentValue',
+          totalValue: totalNota
+        });
+      }
+    }
+    
     currentStep++;
     progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
     
-    // Go to Pagamento tab (final step)
-    progressText.textContent = 'Abrindo aba Pagamento...';
-    await sendToFrame({ action: 'clickTab', tabName: 'Pagamento' });
-    await new Promise(r => setTimeout(r, 500));
+    if (paymentResult?.success) {
+      progressText.textContent = 'Pagamento atualizado!';
+    } else {
+      progressText.textContent = 'Atualize o pagamento manualmente';
+    }
     
+    await new Promise(r => setTimeout(r, 1000));
+    
+    // 5. Done!
     progressFill.style.width = '100%';
     progressText.textContent = 'Concluído!';
     
     setTimeout(() => {
       resultSection.style.display = 'block';
-      totalValue.textContent = `R$ ${totalResult?.totalValue || '0,00'}`;
+      totalValue.textContent = `R$ ${totalNota}`;
       progressContainer.style.display = 'none';
     }, 500);
     
