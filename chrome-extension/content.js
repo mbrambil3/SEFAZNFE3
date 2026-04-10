@@ -491,79 +491,93 @@ async function getPaymentInfo() {
   }
 }
 
-// Edit payment value
+// Edit payment value - same robust approach as products
 async function editPayment(totalValue) {
   try {
-    console.log('SEFAZ Editor - Editing payment with value:', totalValue);
+    console.log('SEFAZ Editor - editPayment with value:', totalValue);
     
     // Check if we're already in the payment edit panel
     let valorInput = findValorPagamentoInput();
     
     if (valorInput) {
+      console.log('SEFAZ Editor - Payment panel already open');
       return await fillPaymentAndSave(valorInput, totalValue);
     }
     
-    // Not in edit panel - need to select and click Editar
-    console.log('SEFAZ Editor - Payment edit panel not open, trying to open...');
+    // Not in edit panel - find the payment row and its link
+    console.log('SEFAZ Editor - Payment panel not open, looking for payment link...');
     
-    // Find and select the payment checkbox
     const rows = document.querySelectorAll('tr');
-    let paymentCheckbox = null;
     let paymentGuid = null;
+    
+    for (const row of rows) {
+      const rowText = row.textContent;
+      
+      // Look for payment row (contains "Dinheiro" or payment value pattern)
+      if (rowText.includes('Dinheiro') || rowText.includes('Pagamento à Vista') || rowText.match(/\d{1,3}(\.\d{3})*,\d{2}/)) {
+        const links = row.querySelectorAll('a');
+        
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          console.log('SEFAZ Editor - Found payment link href:', href);
+          
+          // Extract GUID from any Openlst function (OpenlstDetPag, OpenlstDetItem, etc.)
+          const match = href.match(/Openlst[A-Za-z]*\(['"]([^'"]+)['"]\)/);
+          if (match) {
+            paymentGuid = match[1];
+            // Also get the function name
+            const funcMatch = href.match(/(Openlst[A-Za-z]*)\(/);
+            const funcName = funcMatch ? funcMatch[1] : 'OpenlstDetPag';
+            
+            console.log('SEFAZ Editor - Found payment GUID:', paymentGuid, 'function:', funcName);
+            
+            return { 
+              success: false, 
+              needsScriptExecution: true, 
+              guid: paymentGuid,
+              functionName: funcName,
+              totalValue: totalValue
+            };
+          }
+        }
+      }
+    }
+    
+    // If no link found, try selecting checkbox and clicking Editar button
+    console.log('SEFAZ Editor - No payment link found, trying checkbox + Editar');
     
     for (const row of rows) {
       const checkbox = row.querySelector('input[type="checkbox"]');
       const rowText = row.textContent;
       
-      if (checkbox && (rowText.includes('Dinheiro') || rowText.match(/\d+,\d{2}$/))) {
-        paymentCheckbox = checkbox;
+      if (checkbox && (rowText.includes('Dinheiro') || rowText.match(/\d+,\d{2}/))) {
+        // Select the checkbox
+        if (!checkbox.checked) {
+          checkbox.checked = true;
+          checkbox.click();
+          await sleep(500);
+        }
         
-        // Find link with guid
-        const links = row.querySelectorAll('a');
-        for (const link of links) {
-          const href = link.getAttribute('href') || '';
-          const match = href.match(/Openlst[^']*\(['"]([^'"]+)['"]\)/);
-          if (match) {
-            paymentGuid = match[1];
-            break;
+        // Click Editar button
+        const editBtn = findButton('Editar');
+        if (editBtn) {
+          console.log('SEFAZ Editor - Clicking Editar button');
+          editBtn.click();
+          await sleep(2500);
+          
+          valorInput = findValorPagamentoInput();
+          if (valorInput) {
+            return await fillPaymentAndSave(valorInput, totalValue);
           }
         }
         break;
       }
     }
     
-    if (paymentCheckbox) {
-      // Select the checkbox
-      paymentCheckbox.checked = true;
-      paymentCheckbox.click();
-      await sleep(300);
-      
-      // If we have a guid, return it for script execution
-      if (paymentGuid) {
-        return { 
-          success: false, 
-          needsScriptExecution: true, 
-          guid: paymentGuid,
-          totalValue: totalValue
-        };
-      }
-      
-      // Try clicking Editar button
-      const editBtn = findButton('Editar');
-      if (editBtn) {
-        editBtn.click();
-        await sleep(2000);
-        
-        valorInput = findValorPagamentoInput();
-        if (valorInput) {
-          return await fillPaymentAndSave(valorInput, totalValue);
-        }
-      }
-    }
-    
-    return { success: false, error: 'Não foi possível editar o pagamento' };
+    return { success: false, error: 'Não foi possível abrir o painel de pagamento' };
     
   } catch (error) {
+    console.error('SEFAZ Editor - Error:', error);
     return { success: false, error: error.message };
   }
 }
@@ -573,12 +587,14 @@ async function fillPaymentValue(totalValue) {
   try {
     console.log('SEFAZ Editor - fillPaymentValue:', totalValue);
     
-    await sleep(1000);
+    // Wait for panel to fully load
+    await sleep(2000);
     
     let valorInput = findValorPagamentoInput();
     
     if (!valorInput) {
-      await sleep(1500);
+      console.log('SEFAZ Editor - Valor input not found, waiting more...');
+      await sleep(2000);
       valorInput = findValorPagamentoInput();
     }
     
@@ -589,22 +605,29 @@ async function fillPaymentValue(totalValue) {
     return await fillPaymentAndSave(valorInput, totalValue);
     
   } catch (error) {
+    console.error('SEFAZ Editor - Error:', error);
     return { success: false, error: error.message };
   }
 }
 
 // Find "Valor do Pagamento" input
 function findValorPagamentoInput() {
+  console.log('SEFAZ Editor - Looking for Valor do Pagamento field...');
+  
   const allTds = document.querySelectorAll('td');
   
   for (const td of allTds) {
     const text = td.textContent.trim();
     
     if (text === 'Valor do Pagamento:' || text.includes('Valor do Pagamento')) {
+      console.log('SEFAZ Editor - Found Valor do Pagamento label');
+      
+      // Check next TD
       let nextTd = td.nextElementSibling;
       if (nextTd && nextTd.tagName === 'TD') {
-        const input = nextTd.querySelector('input[type="text"], input:not([type])');
+        const input = nextTd.querySelector('input[type="text"], input:not([type="checkbox"]):not([type="hidden"]):not([type="button"])');
         if (input && !input.readOnly && !input.disabled) {
+          console.log('SEFAZ Editor - Found Valor input in next TD, value:', input.value);
           return input;
         }
       }
@@ -614,7 +637,8 @@ function findValorPagamentoInput() {
       if (row) {
         const inputs = row.querySelectorAll('input[type="text"]');
         for (const inp of inputs) {
-          if (!inp.readOnly && !inp.disabled && inp.value.match(/[\d\.,]+/)) {
+          if (!inp.readOnly && !inp.disabled) {
+            console.log('SEFAZ Editor - Found Valor input in row, value:', inp.value);
             return inp;
           }
         }
@@ -622,38 +646,53 @@ function findValorPagamentoInput() {
     }
   }
   
+  // Fallback: look for input with payment value pattern
+  const allInputs = document.querySelectorAll('input[type="text"]');
+  for (const inp of allInputs) {
+    if (inp.value && inp.value.match(/^\d{1,3}(\.\d{3})*,\d{2}$/) && !inp.readOnly) {
+      const parentText = inp.closest('tr')?.textContent || '';
+      if (parentText.includes('Pagamento') || parentText.includes('Valor')) {
+        console.log('SEFAZ Editor - Found Valor input by pattern, value:', inp.value);
+        return inp;
+      }
+    }
+  }
+  
+  console.log('SEFAZ Editor - Valor do Pagamento input NOT found');
   return null;
 }
 
 // Fill payment value and save
 async function fillPaymentAndSave(valorInput, totalValue) {
-  console.log('SEFAZ Editor - Filling payment input, current:', valorInput.value);
+  console.log('SEFAZ Editor - Filling payment, current value:', valorInput.value, 'new value:', totalValue);
   
   valorInput.focus();
   await sleep(100);
   valorInput.select();
   await sleep(50);
   
-  // Format the value (should be like 355,20)
-  let formattedValue = totalValue.replace('R$', '').trim();
+  // Format the value (remove R$ if present)
+  let formattedValue = totalValue.replace('R$', '').replace(/\s/g, '').trim();
   
+  // Clear and set new value
   valorInput.value = '';
   await sleep(50);
   valorInput.value = formattedValue;
   
+  // Trigger events
   valorInput.dispatchEvent(new Event('input', { bubbles: true }));
   valorInput.dispatchEvent(new Event('change', { bubbles: true }));
   valorInput.dispatchEvent(new Event('blur', { bubbles: true }));
   
   console.log('SEFAZ Editor - Payment value set to:', formattedValue);
-  await sleep(300);
+  await sleep(500);
   
-  // Click Salvar
+  // Click Salvar button
   const saveBtn = findButton('Salvar');
   if (saveBtn) {
     console.log('SEFAZ Editor - Clicking Salvar');
     saveBtn.click();
-    await sleep(2000);
+    await sleep(2500);
     console.log('SEFAZ Editor - Payment saved!');
     return { success: true };
   }

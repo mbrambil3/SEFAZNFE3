@@ -223,23 +223,36 @@ function updateExecuteButton() {
   executeBtn.disabled = !hasQty && !hasDates;
 }
 
-// Execute script in page context (MAIN world) to call OpenlstDetItem
-async function executeInPageContext(guid, frameId) {
+// Execute script in page context (MAIN world) to call OpenlstDetItem or similar
+async function executeInPageContext(guid, frameId, functionName = 'OpenlstDetItem') {
   try {
-    console.log('Executing OpenlstDetItem in page context, guid:', guid);
+    console.log('Executing', functionName, 'in page context, guid:', guid);
     
     await chrome.scripting.executeScript({
       target: { tabId: currentTabId, frameIds: [frameId] },
       world: 'MAIN',
-      func: (guid) => {
-        console.log('SEFAZ Editor - Calling OpenlstDetItem with:', guid);
-        if (typeof OpenlstDetItem === 'function') {
-          OpenlstDetItem(guid);
+      func: (guid, funcName) => {
+        console.log('SEFAZ Editor - Calling', funcName, 'with:', guid);
+        
+        // Try the specific function name first
+        if (typeof window[funcName] === 'function') {
+          window[funcName](guid);
           return true;
         }
+        
+        // Fallback to common function names
+        const funcs = ['OpenlstDetItem', 'OpenlstDetPag', 'OpenlstDet'];
+        for (const fn of funcs) {
+          if (typeof window[fn] === 'function') {
+            console.log('SEFAZ Editor - Using fallback function:', fn);
+            window[fn](guid);
+            return true;
+          }
+        }
+        
         return false;
       },
-      args: [guid]
+      args: [guid, functionName]
     });
     
     return true;
@@ -367,11 +380,16 @@ async function executeAutomation() {
     // If needs script execution for payment panel
     if (paymentResult?.needsScriptExecution && paymentResult?.guid) {
       progressText.textContent = 'Abrindo painel de pagamento...';
+      console.log('Payment needs script execution, guid:', paymentResult.guid, 'function:', paymentResult.functionName);
       
-      const executed = await executeInPageContext(paymentResult.guid, productsFrameId);
+      const executed = await executeInPageContext(
+        paymentResult.guid, 
+        productsFrameId, 
+        paymentResult.functionName || 'OpenlstDetPag'
+      );
       
       if (executed) {
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 3500));
         
         paymentResult = await sendToFrame({
           action: 'fillPaymentValue',
